@@ -1,63 +1,27 @@
-import { pool } from '../../../lib/db';
-import { z } from 'zod';
-
-type FinesSummaryRow = {
-    mes_periodo: string;
-    total_multas: number;
-    total_pagado: number;
-    total_pendiente: number;
-    monto_total_generado: number;
-}
-
-
-const searchSchema = z.object({
-  pendientes_solo: z.enum(['true', 'false']).optional().default('false'),
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(5).max(50).default(20),
-});
+import { getResumenMultas } from "./actions";
+import { Report3Schema } from "./squema";
 
 export const dynamic = 'force-dynamic';
 
-export default async function Reporte3({
-  searchParams,
-}: {
-  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
-}) {
+interface Reporte3PageProps {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}
+
+export default async function Reporte3({ searchParams }: Reporte3PageProps) {
     const resolvedParams = await searchParams;
     
-    const params = searchSchema.parse({
-      pendientes_solo: resolvedParams.pendientes_solo,
-      page: resolvedParams.page,
-      limit: resolvedParams.limit,
-    });
+    const parsed = Report3Schema.safeParse(resolvedParams);
 
-    const offset = (params.page - 1) * params.limit;
+    if (!parsed.success) {
+      return <div>Error en parámetros</div>;
+    }
 
-    const whereClause = params.pendientes_solo === 'true' ? 'WHERE total_pendiente > 0' : '';
-    const queryParams = params.pendientes_solo === 'true' ? [params.limit, offset] : [params.limit, offset];
+    const { ok, data, error } = await getResumenMultas(parsed.data);
 
-    const result = await pool.query(
-        `SELECT mes_periodo, total_multas, total_pagado, total_pendiente, monto_total_generado
-        FROM vw_fines_summary
-        ${whereClause}
-        ORDER BY mes_periodo DESC
-        LIMIT $1 OFFSET $2`,
-        queryParams
-    );
+    if (!ok || !data) return <div>Error: {error}</div>;
 
-   
-    const countResult = await pool.query(
-      `SELECT COUNT(*) as total FROM vw_fines_summary ${whereClause}`
-    );
-
-    const rows = result.rows as FinesSummaryRow[];
-    const totalRecords = parseInt(countResult.rows[0].total);
-    const totalPages = Math.ceil(totalRecords / params.limit);
-
-   
-    const totalPagado = rows.reduce((acc, r) => acc + Number(r.total_pagado), 0);
-    const totalPendiente = rows.reduce((acc, r) => acc + Number(r.total_pendiente), 0);
-    const totalGenerado = rows.reduce((acc, r) => acc + Number(r.monto_total_generado), 0);
+    const { rows, totalRecords, totalPages, totalPagado, totalPendiente, totalGenerado } = data;
+    const params = parsed.data;
 
     return (
         <main className="main-container">

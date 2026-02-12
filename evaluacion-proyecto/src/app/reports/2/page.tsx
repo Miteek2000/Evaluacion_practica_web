@@ -1,60 +1,27 @@
-import { pool } from '../../../lib/db';
-import { z } from 'zod';
-
-type OverdueRow = {
-    loan_id: number;
-    member_name: string;
-    book_title: string;
-    due_at: string;
-    returned_at: string | null;
-    dias_atraso: number;
-}
-
-const searchSchema = z.object({
-  dias_minimos: z.coerce.number().int().min(0).max(365).default(0),
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(5).max(50).default(20),
-});
+import { getPrestamosVencidos } from "./actions";
+import { Report2Schema } from "./squema";
 
 export const dynamic = 'force-dynamic';
 
-export default async function Reporte2({
-  searchParams,
-}: {
-  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
-}) {
+interface Reporte2PageProps {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}
+
+export default async function Reporte2({ searchParams }: Reporte2PageProps) {
     const resolvedParams = await searchParams;
     
-    const params = searchSchema.parse({
-      dias_minimos: resolvedParams.dias_minimos,
-      page: resolvedParams.page,
-      limit: resolvedParams.limit,
-    });
+    const parsed = Report2Schema.safeParse(resolvedParams);
 
-    const offset = (params.page - 1) * params.limit;
+    if (!parsed.success) {
+      return <div>Error en parámetros</div>;
+    }
 
-    
-    const result = await pool.query(
-        `SELECT loan_id, member_name, book_title, due_at, returned_at, dias_atraso
-        FROM vw_overdue_loans
-        WHERE dias_atraso >= $1
-        ORDER BY dias_atraso DESC
-        LIMIT $2 OFFSET $3`,
-        [params.dias_minimos, params.limit, offset]
-    );
+    const { ok, data, error } = await getPrestamosVencidos(parsed.data);
 
-   
-    const countResult = await pool.query(
-      `SELECT COUNT(*) as total FROM vw_overdue_loans WHERE dias_atraso >= $1`,
-      [params.dias_minimos]
-    );
+    if (!ok || !data) return <div>Error: {error}</div>;
 
-    const rows = result.rows as OverdueRow[];
-    const totalRecords = parseInt(countResult.rows[0].total);
-    const totalPages = Math.ceil(totalRecords / params.limit);
-
-    const totalOverdue = rows.length;
-    const avgDaysOverdue = rows.reduce((acc, r) => acc + r.dias_atraso, 0) / (totalOverdue || 1);
+    const { rows, totalRecords, totalPages, totalOverdue, avgDaysOverdue } = data;
+    const params = parsed.data;
 
     return (
         <main className="main-container">

@@ -1,101 +1,27 @@
-import { pool } from '../../../lib/db';
-import { z } from 'zod';
-
-type MemberActivityRow = {
-  member_id: number;
-  socio: string;
-  member_type: string;
-  total_prestamos: number;
-  prestamos_con_atraso: number;
-  tasa_atraso_porcentaje: number;
-  categoria_actividad: string;
-};
-
-const ALLOWED_TYPES = ['teacher', 'external', 'student'];
-const ALLOWED_CATEGORIES = ['Socio Frecuente', 'Socio Ocasional', 'Inactivo'];
-
-const searchSchema = z.object({
-  member_type: z.string().optional().refine(
-    (val) => !val || ALLOWED_TYPES.includes(val),
-    { message: 'Tipo de socio no válido' }
-  ),
-  categoria_actividad: z.string().optional().refine(
-    (val) => !val || ALLOWED_CATEGORIES.includes(val),
-    { message: 'Categoría de actividad no válida' }
-  ),
-  tasa_minima: z.coerce.number().min(0).max(100).optional(),
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(5).max(50).default(20),
-});
+import { getActividadSocios } from "./actions";
+import { Report4Schema, ALLOWED_TYPES, ALLOWED_CATEGORIES } from "./squema";
 
 export const dynamic = 'force-dynamic';
 
-export default async function Reporte4({
-  searchParams,
-}: {
-  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
-}) {
+interface Reporte4PageProps {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}
+
+export default async function Reporte4({ searchParams }: Reporte4PageProps) {
   const resolvedParams = await searchParams;
   
-  const params = searchSchema.parse({
-    member_type: resolvedParams.member_type,
-    categoria_actividad: resolvedParams.categoria_actividad,
-    tasa_minima: resolvedParams.tasa_minima,
-    page: resolvedParams.page,
-    limit: resolvedParams.limit,
-  });
+  const parsed = Report4Schema.safeParse(resolvedParams);
 
-  const offset = (params.page - 1) * params.limit;
-
-  const whereClauses: string[] = [];
-  const queryParams: any[] = [];
-  let paramIndex = 1;
-
-  if (params.member_type) {
-    whereClauses.push(`member_type = $${paramIndex}`);
-    queryParams.push(params.member_type);
-    paramIndex++;
+  if (!parsed.success) {
+    return <div>Error en parámetros</div>;
   }
 
-  if (params.categoria_actividad) {
-    whereClauses.push(`categoria_actividad = $${paramIndex}`);
-    queryParams.push(params.categoria_actividad);
-    paramIndex++;
-  }
+  const { ok, data, error } = await getActividadSocios(parsed.data);
 
-  if (params.tasa_minima !== undefined) {
-    whereClauses.push(`tasa_atraso_porcentaje >= $${paramIndex}`);
-    queryParams.push(params.tasa_minima);
-    paramIndex++;
-  }
+  if (!ok || !data) return <div>Error: {error}</div>;
 
-  const whereClause = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
-
-  const result = await pool.query(
-    `SELECT member_id, socio, member_type, total_prestamos, prestamos_con_atraso, 
-            tasa_atraso_porcentaje, categoria_actividad
-     FROM vw_member_activity
-     ${whereClause}
-     ORDER BY total_prestamos DESC
-     LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
-    [...queryParams, params.limit, offset]
-  );
-
-  const countResult = await pool.query(
-    `SELECT COUNT(*) as total FROM vw_member_activity ${whereClause}`,
-    queryParams
-  );
-
-  const rows = result.rows as MemberActivityRow[];
-  const totalRecords = parseInt(countResult.rows[0].total);
-  const totalPages = Math.ceil(totalRecords / params.limit);
-
-
-  const totalLoans = rows.reduce((acc, r) => acc + Number(r.total_prestamos), 0);
-  const avgOverdueRate = rows.length > 0 
-    ? rows.reduce((acc, r) => acc + Number(r.tasa_atraso_porcentaje), 0) / rows.length 
-    : 0;
-  const activeMembers = rows.filter(r => r.categoria_actividad === 'Socio Frecuente').length;
+  const { rows, totalRecords, totalPages, totalLoans, avgOverdueRate, activeMembers } = data;
+  const params = parsed.data;
 
   return (
     <main className="main-container">

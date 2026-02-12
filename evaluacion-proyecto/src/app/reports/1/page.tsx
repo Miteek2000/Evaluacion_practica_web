@@ -1,70 +1,27 @@
-import { pool } from '../../../lib/db';
-import { z } from 'zod';
-
-type BookRow = {
-  book_id: number;
-  titulo_libro: string;
-  autor_libro: string;
-  categoria: string;
-  total_prestamos: number;
-  posicion_ranking: number;
-};
-
-
-const ALLOWED_CATEGORIES = ['Novela', 'Distopía', 'Fábula', 'Tecnología', 'Clásico', 'Historia', 'Fantasía'];
-
-
-const searchSchema = z.object({
-  categoria: z.string().optional().refine(
-    (val) => !val || ALLOWED_CATEGORIES.includes(val),
-    { message: 'Categoría no válida' }
-  ),
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(5).max(50).default(20),
-});
+import { getLibrosMasPrestados } from "./actions";
+import { Report1Schema, ALLOWED_CATEGORIES } from "./squema";
 
 export const dynamic = 'force-dynamic';
 
-export default async function Reporte1({
-  searchParams,
-}: {
-  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
-}) {
+interface Reporte1PageProps {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}
+
+export default async function Reporte1({ searchParams }: Reporte1PageProps) {
   const resolvedParams = await searchParams;
   
-  const params = searchSchema.parse({
-    categoria: resolvedParams.categoria,
-    page: resolvedParams.page,
-    limit: resolvedParams.limit,
-  });
+  const parsed = Report1Schema.safeParse(resolvedParams);
 
-  const offset = (params.page - 1) * params.limit;
+  if (!parsed.success) {
+    return <div>Error en parámetros</div>;
+  }
 
-  
-  const whereClause = params.categoria ? 'WHERE categoria = $1' : '';
-  const queryParams = params.categoria ? [params.categoria, params.limit, offset] : [params.limit, offset];
-  const paramStart = params.categoria ? 2 : 1;
+  const { ok, data, error } = await getLibrosMasPrestados(parsed.data);
 
-  const result = await pool.query(
-    `SELECT book_id, titulo_libro, autor_libro, categoria, total_prestamos, posicion_ranking
-     FROM vw_most_borrowed_books
-     ${whereClause}
-     ORDER BY total_prestamos DESC
-     LIMIT $${paramStart} OFFSET $${paramStart + 1}`,
-    queryParams
-  );
+  if (!ok || !data) return <div>Error: {error}</div>;
 
-  
-  const countResult = await pool.query(
-    `SELECT COUNT(*) as total FROM vw_most_borrowed_books ${whereClause}`,
-    params.categoria ? [params.categoria] : []
-  );
-
-  const rows = result.rows as BookRow[];
-  const totalRecords = parseInt(countResult.rows[0].total);
-  const totalPages = Math.ceil(totalRecords / params.limit);
-  const totalLoans = rows.reduce((acc, r) => acc + Number(r.total_prestamos), 0);
-  const topBook = rows[0] ?? null;
+  const { rows, totalRecords, totalPages, totalLoans, topBook } = data;
+  const params = parsed.data;
 
   return (
     <main className="main-container">

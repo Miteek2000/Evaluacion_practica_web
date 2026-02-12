@@ -1,94 +1,27 @@
-import { pool } from '../../../lib/db';
-import { z } from 'zod';
-
-type InventoryHealthRow = {
-  category: string;
-  total_ejemplares: number;
-  disponibles: number;
-  prestados: number;
-  perdidos: number;
-  porcentaje_disponibilidad: number;
-  estado_salud: string;
-};
-
-const ALLOWED_STATES = ['Saludable', 'Alerta: Stock Bajo', 'Crítico: Muchas Pérdidas'];
-
-const searchSchema = z.object({
-  estado_salud: z.string().optional().refine(
-    (val) => !val || ALLOWED_STATES.includes(val),
-    { message: 'Estado de salud no válido' }
-  ),
-  disponibilidad_minima: z.coerce.number().min(0).max(100).optional(),
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(5).max(50).default(20),
-});
+import { getSaludInventario } from "./actions";
+import { Report5Schema, ALLOWED_STATES } from "./squema";
 
 export const dynamic = 'force-dynamic';
 
-export default async function Reporte5({
-  searchParams,
-}: {
-  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
-}) {
+interface Reporte5PageProps {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}
+
+export default async function Reporte5({ searchParams }: Reporte5PageProps) {
   const resolvedParams = await searchParams;
   
-  const params = searchSchema.parse({
-    estado_salud: resolvedParams.estado_salud,
-    disponibilidad_minima: resolvedParams.disponibilidad_minima,
-    page: resolvedParams.page,
-    limit: resolvedParams.limit,
-  });
+  const parsed = Report5Schema.safeParse(resolvedParams);
 
-  const offset = (params.page - 1) * params.limit;
-
-
-  const whereClauses: string[] = [];
-  const queryParams: any[] = [];
-  let paramIndex = 1;
-
-  if (params.estado_salud) {
-    whereClauses.push(`estado_salud = $${paramIndex}`);
-    queryParams.push(params.estado_salud);
-    paramIndex++;
+  if (!parsed.success) {
+    return <div>Error en parámetros</div>;
   }
 
-  if (params.disponibilidad_minima !== undefined) {
-    whereClauses.push(`porcentaje_disponibilidad >= $${paramIndex}`);
-    queryParams.push(params.disponibilidad_minima);
-    paramIndex++;
-  }
+  const { ok, data, error } = await getSaludInventario(parsed.data);
 
-  const whereClause = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+  if (!ok || !data) return <div>Error: {error}</div>;
 
-
-  const result = await pool.query(
-    `SELECT category, total_ejemplares, disponibles, prestados, perdidos, 
-            porcentaje_disponibilidad, estado_salud
-     FROM vw_inventory_health
-     ${whereClause}
-     ORDER BY porcentaje_disponibilidad ASC
-     LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
-    [...queryParams, params.limit, offset]
-  );
-
-
-  const countResult = await pool.query(
-    `SELECT COUNT(*) as total FROM vw_inventory_health ${whereClause}`,
-    queryParams
-  );
-
-  const rows = result.rows as InventoryHealthRow[];
-  const totalRecords = parseInt(countResult.rows[0].total);
-  const totalPages = Math.ceil(totalRecords / params.limit);
-
-
-  const totalCopies = rows.reduce((acc, r) => acc + Number(r.total_ejemplares), 0);
-  const totalAvailable = rows.reduce((acc, r) => acc + Number(r.disponibles), 0);
-  const totalLost = rows.reduce((acc, r) => acc + Number(r.perdidos), 0);
-  const avgAvailability = rows.length > 0 
-    ? rows.reduce((acc, r) => acc + Number(r.porcentaje_disponibilidad), 0) / rows.length 
-    : 0;
-  const criticalCategories = rows.filter(r => r.estado_salud.includes('Crítico')).length;
+  const { rows, totalRecords, totalPages, totalCopies, totalAvailable, totalLost, avgAvailability, criticalCategories } = data;
+  const params = parsed.data;
 
   return (
     <main className="main-container">
